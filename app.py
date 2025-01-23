@@ -14,7 +14,7 @@ from amazon_transcribe.model import TranscriptEvent, TranscriptResultStream
 
 from api_request_schema import api_request_list, get_model_ids
 
-model_id = os.getenv('MODEL_ID', 'amazon.titan-text-express-v1')
+model_id = os.getenv('MODEL_ID', 'anthropic.claude-3-5-haiku-20241022-v1:0')
 aws_region = os.getenv('AWS_REGION', 'us-east-1')
 
 if model_id not in get_model_ids():
@@ -24,17 +24,17 @@ if model_id not in get_model_ids():
 api_request = api_request_list[model_id]
 config = {
     'log_level': 'none',  # One of: info, debug, none
-    'last_speech': "If you have any other questions, please don't hesitate to ask. Have a great day!",
+    'last_speech': "ご質問がございましたら、お気軽にお申し付けください。ご利用ありがとうございました。",
     'region': aws_region,
     'polly': {
         'Engine': 'neural',
-        'LanguageCode': 'en-US',
-        'VoiceId': 'Joanna',
+        'LanguageCode': 'ja-JP',
+        'VoiceId': 'Kazuha',
         'OutputFormat': 'pcm',
     },
     'translate': {
-        'SourceLanguageCode': 'en',
-        'TargetLanguageCode': 'en',
+        'SourceLanguageCode': 'ja',
+        'TargetLanguageCode': 'ja',
     },
     'bedrock': {
         'response_streaming': True,
@@ -98,7 +98,7 @@ class BedrockModelsWrapper:
         elif model_provider == 'meta':
             body['prompt'] = text
         elif model_provider == 'anthropic':
-            body['prompt'] = f'\n\nHuman: {text}\n\nAssistant:'
+            body['messages'] = [{"role": "user", "content": text}]
         elif model_provider == 'cohere':
             body['prompt'] = text
         else:
@@ -125,7 +125,7 @@ class BedrockModelsWrapper:
             text = chunk_obj['generation']
         elif model_provider == 'anthropic':
             chunk_obj = json.loads(chunk.get('bytes').decode())
-            text = chunk_obj['completion']
+            text = chunk_obj['delta']['text'] if 'delta' in chunk_obj else ''
         elif model_provider == 'cohere':
             chunk_obj = json.loads(chunk.get('bytes').decode())
             text = ' '.join([c["text"] for c in chunk_obj['generations']])
@@ -145,10 +145,10 @@ def to_audio_generator(bedrock_stream):
             if chunk:
                 text = BedrockModelsWrapper.get_stream_text(chunk)
 
-                if '.' in text:
-                    a = text.split('.')[:-1]
-                    to_polly = ''.join([prefix, '.'.join(a), '. '])
-                    prefix = text.split('.')[-1]
+                if '。' in text:
+                    a = text.split('。')[:-1]
+                    to_polly = ''.join([prefix, '。'.join(a), '。'])
+                    prefix = text.split('。')[-1]
                     print(to_polly, flush=True, end='')
                     yield to_polly
                 else:
@@ -156,7 +156,7 @@ def to_audio_generator(bedrock_stream):
 
         if prefix != '':
             print(prefix, flush=True, end='')
-            yield f'{prefix}.'
+            yield f'{prefix}。'
 
         print('\n')
 
@@ -271,11 +271,11 @@ def stream_data(stream):
 def aws_polly_tts(polly_text):
     printer(f'[INTO] Character count: {len(polly_text)}', 'debug')
     byte_stream_list = []
-    polly_text_len = len(polly_text.split('.'))
+    polly_text_len = len(polly_text.split('。'))
     printer(f'LEN polly_text_len: {polly_text_len}', 'debug')
     for i in range(0, polly_text_len, 20):
         printer(f'{i}:{i + 20}', 'debug')
-        polly_text_chunk = '. '.join(polly_text.split('. ')[i:i + 20])
+        polly_text_chunk = '。'.join(polly_text.split('。')[i:i + 20])
         printer(f'polly_text_chunk LEN: {len(polly_text_chunk)}', 'debug')
 
         response = polly.synthesize_speech(
@@ -316,11 +316,12 @@ class EventHandler(TranscriptResultStreamHandler):
     text = []
     last_time = 0
     sample_count = 0
-    max_sample_counter = 4
+    max_sample_counter = 20  # Increased to be more tolerant of silence
 
     def __init__(self, transcript_result_stream: TranscriptResultStream, bedrock_wrapper):
         super().__init__(transcript_result_stream)
         self.bedrock_wrapper = bedrock_wrapper
+        print("[INFO] 音声入力の準備ができました。話し始めてください...")
 
     async def handle_transcript_event(self, transcript_event: TranscriptEvent):
         results = transcript_event.transcript.results
@@ -345,7 +346,7 @@ class EventHandler(TranscriptResultStreamHandler):
                         os._exit(0)  # exit from a child process
                     else:
                         input_text = ' '.join(EventHandler.text)
-                        printer(f'\n[INFO] User input: {input_text}', 'info')
+                        printer(f'\n[INFO] ユーザー入力: {input_text}', 'info')
 
                         executor = ThreadPoolExecutor(max_workers=1)
                         # Add executor so Bedrock execution can be shut down, if user input signals so.
@@ -386,7 +387,7 @@ class MicStream:
         loop.run_in_executor(ThreadPoolExecutor(max_workers=1), UserInputManager.start_user_input_loop)
 
         stream = await transcribe_streaming.start_stream_transcription(
-            language_code="en-US",
+            language_code="ja-JP",
             media_sample_rate_hz=16000,
             media_encoding="pcm",
         )
@@ -397,16 +398,16 @@ class MicStream:
 
 info_text = f'''
 *************************************************************
-[INFO] Supported FM models: {get_model_ids()}.
-[INFO] Change FM model by setting <MODEL_ID> environment variable. Example: export MODEL_ID=meta.llama2-70b-chat-v1
+[INFO] サポートされているモデル: {get_model_ids()}
+[INFO] モデルを変更するには MODEL_ID 環境変数を設定してください。例: export MODEL_ID=anthropic.claude-3-5-haiku-20241022-v1:0
 
-[INFO] AWS Region: {config['region']}
-[INFO] Amazon Bedrock model: {config['bedrock']['api_request']['modelId']}
-[INFO] Polly config: engine {config['polly']['Engine']}, voice {config['polly']['VoiceId']}
-[INFO] Log level: {config['log_level']}
+[INFO] AWS リージョン: {config['region']}
+[INFO] Amazon Bedrock モデル: {config['bedrock']['api_request']['modelId']}
+[INFO] Polly 設定: エンジン {config['polly']['Engine']}, 音声 {config['polly']['VoiceId']}
+[INFO] ログレベル: {config['log_level']}
 
-[INFO] Hit ENTER to interrupt Amazon Bedrock. After you can continue speaking!
-[INFO] Go ahead with the voice chat with Amazon Bedrock!
+[INFO] Amazon Bedrock の応答を中断するには Enter キーを押してください。その後、再び話すことができます！
+[INFO] Amazon Bedrock との音声チャットを開始してください！
 *************************************************************
 '''
 print(info_text)
