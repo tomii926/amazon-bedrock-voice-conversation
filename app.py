@@ -125,7 +125,10 @@ class BedrockModelsWrapper:
             text = chunk_obj['generation']
         elif model_provider == 'anthropic':
             chunk_obj = json.loads(chunk.get('bytes').decode())
-            text = chunk_obj['delta']['text'] if 'delta' in chunk_obj else ''
+            if 'delta' in chunk_obj and 'text' in chunk_obj['delta']:
+                text = chunk_obj['delta']['text']
+            else:
+                text = ''
         elif model_provider == 'cohere':
             chunk_obj = json.loads(chunk.get('bytes').decode())
             text = ' '.join([c["text"] for c in chunk_obj['generations']])
@@ -316,7 +319,8 @@ class EventHandler(TranscriptResultStreamHandler):
     text = []
     last_time = 0
     sample_count = 0
-    max_sample_counter = 20  # Increased to be more tolerant of silence
+    max_sample_counter = 2
+    fin_sample_counter = 100
 
     def __init__(self, transcript_result_stream: TranscriptResultStream, bedrock_wrapper):
         super().__init__(transcript_result_stream)
@@ -337,15 +341,11 @@ class EventHandler(TranscriptResultStreamHandler):
 
             else:
                 EventHandler.sample_count += 1
-                if EventHandler.sample_count == EventHandler.max_sample_counter:
-
-                    if len(EventHandler.text) == 0:
-                        last_speech = config['last_speech']
-                        print(last_speech, flush=True)
-                        aws_polly_tts(last_speech)
-                        os._exit(0)  # exit from a child process
-                    else:
+                
+                if EventHandler.max_sample_counter == EventHandler.sample_count:
+                    if len(EventHandler.text) != 0:
                         input_text = ' '.join(EventHandler.text)
+                        print()
                         printer(f'\n[INFO] ユーザー入力: {input_text}', 'info')
 
                         executor = ThreadPoolExecutor(max_workers=1)
@@ -357,8 +357,14 @@ class EventHandler(TranscriptResultStreamHandler):
                             input_text
                         )
 
-                    EventHandler.text.clear()
-                    EventHandler.sample_count = 0
+                        EventHandler.text.clear()
+                        EventHandler.sample_count = 0
+
+                if EventHandler.sample_count == EventHandler.fin_sample_counter:
+                    last_speech = config['last_speech']
+                    print(last_speech, flush=True)
+                    aws_polly_tts(last_speech)
+                    os._exit(0)  # exit from a child process
 
 
 class MicStream:
